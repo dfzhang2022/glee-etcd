@@ -42,6 +42,12 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 )
+var asciiArt = "\n"+"   ________    ____________\n" +
+					"  / ____/ /   / ____/ ____/\n" +
+					" / / __/ /   / __/ / __/   \n" +
+					"/ /_/ / /___/ /___/ /___   \n" +
+					"\\____/_____/_____/_____/   \n" +
+					"                           "
 
 type dirType string
 
@@ -80,6 +86,13 @@ func startEtcdOrProxyV2() {
 
 	if lg == nil {
 		// TODO: remove in 3.5
+		
+		// plog.Infof("   ________    ____________")
+		// plog.Infof("  / ____/ /   / ____/ ____/")
+		// plog.Infof(" / / __/ /   / __/ / __/   ")
+		// plog.Infof("/ /_/ / /___/ /___/ /___   ")
+		// plog.Infof("\\____/_____/_____/_____/  ")
+		plog.Infof(asciiArt)
 		plog.Infof("etcd Version: %s\n", version.Version)
 		plog.Infof("Git SHA: %s\n", version.GitSHA)
 		plog.Infof("Go Version: %s\n", runtime.Version())

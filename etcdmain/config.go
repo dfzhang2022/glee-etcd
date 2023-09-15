@@ -297,6 +297,8 @@ func (cfg *config) parse(arguments []string) error {
 	}
 
 	if cfg.printVersion {
+		fmt.Println(asciiArt)
+		fmt.Printf("glee-etcd Version: 1.0.0\n")
 		fmt.Printf("etcd Version: %s\n", version.Version)
 		fmt.Printf("Git SHA: %s\n", version.GitSHA)
 		fmt.Printf("Go Version: %s\n", runtime.Version())

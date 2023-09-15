@@ -58,12 +58,12 @@ etcd_build() {
 	CGO_ENABLED=0 go build ${GO_BUILD_FLAGS:-} \
 		-installsuffix cgo \
 		-ldflags "$GO_LDFLAGS" \
-		-o "${out}/etcd" ${REPO_PATH} || return
+		-o "${out}/glee-etcd" ${REPO_PATH} || return
 	# shellcheck disable=SC2086
 	CGO_ENABLED=0 go build ${GO_BUILD_FLAGS:-} \
 		-installsuffix cgo \
 		-ldflags "$GO_LDFLAGS" \
-		-o "${out}/etcdctl" ${REPO_PATH}/etcdctl || return
+		-o "${out}/glee-etcdctl" ${REPO_PATH}/etcdctl || return
 }
 
 tools_build() {
