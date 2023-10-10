@@ -13,8 +13,8 @@
 .PHONY: build
 build:
 	GO_BUILD_FLAGS="-v" ./build
-	./bin/etcd --version
-	./bin/etcdctl version
+	./bin/glee-etcd --version
+	./bin/glee-etcdctl version
 
 clean:
 	rm -f ./codecov
