@@ -78,6 +78,7 @@ type ServerConfig struct {
 
 	TickMs        uint
 	ElectionTicks int
+	RttprobeTicks int // Using for setting Rtt Probing
 
 	// InitialElectionTickAdvance is true, then local member fast-forwards
 	// election ticks to speed up "initial" leader election trigger. This

@@ -10,7 +10,7 @@ docker exec -it glee2 bash -c "if [ ! -d '/expr/data' ]; then mkdir /expr/data; 
 
 # 检查并在glee3中创建/expr目录和/expr/data目录
 docker exec -it glee3 bash -c "if [ ! -d '/expr' ]; then mkdir /expr; fi"
-docker exec -it glee2 bash -c "if [ ! -d '/expr/data' ]; then mkdir /expr/data; fi"
+docker exec -it glee3 bash -c "if [ ! -d '/expr/data' ]; then mkdir /expr/data; fi"
 
 
 # 定义要复制的文件路径

@@ -1,0 +1,11 @@
+protoc --gofast_out=. raft.proto
+
+protoc -I=/home/cube/protobuf -I=./ raft.proto --gogo_out=./
+
+protoc -I=.  --gogo_out=. raft.proto
+
+protoc -I=. -I=$GOPATH -I=$GOPATH/pkg/mod/github.com/gogo/protobuf/protobuf --gogo_out=. raft.proto
+
+
+
+protoc -I=. -I=$GOPATH/src/github.com/gogo/protobuf --gogo_out=. raft.proto

@@ -28,6 +28,7 @@ import (
 	"go.etcd.io/etcd/raft/confchange"
 	"go.etcd.io/etcd/raft/quorum"
 	pb "go.etcd.io/etcd/raft/raftpb"
+	"go.etcd.io/etcd/raft/strategy"
 	"go.etcd.io/etcd/raft/tracker"
 )
 
@@ -80,6 +81,11 @@ var ErrProposalDropped = errors.New("raft proposal dropped")
 type lockedRand struct {
 	mu   sync.Mutex
 	rand *rand.Rand
+}
+type RttMetaInfo struct {
+	isProbed        bool
+	lastProbingTime time.Time
+	timeStamp       int64
 }
 
 func (r *lockedRand) Intn(n int) int {
@@ -139,6 +145,8 @@ type Config struct {
 	// heartbeats. That is, a leader sends heartbeat messages to maintain its
 	// leadership every HeartbeatTick ticks.
 	HeartbeatTick int
+	// 用于设置Rtt检测间隔
+	RttprobeTick int
 
 	// Storage is the storage for raft. raft generates entries and states to be
 	// stored in storage. raft reads the persisted entries and states out of
@@ -181,6 +189,9 @@ type Config struct {
 	// rejoins the cluster.
 	PreVote bool
 
+	// NetworkSimulation enables the simulation of the latency between nodes located in wide-area.
+	NetworkSimulation bool
+
 	// ReadOnlyOption specifies how the read only request is processed.
 	//
 	// ReadOnlySafe guarantees the linearizability of the read only request by
@@ -207,6 +218,11 @@ type Config struct {
 	// logical clock from assigning the timestamp and then forwarding the data
 	// to the leader.
 	DisableProposalForwarding bool
+
+	//用于保存任意两节点之间的网络信息矩阵
+	NodeLatency [][]uint64
+	// Mark the leader election strategy used
+	Strategy strategy.Strategy
 }
 
 func (c *Config) validate() error {
@@ -247,7 +263,7 @@ func (c *Config) validate() error {
 	if c.ReadOnlyOption == ReadOnlyLeaseBased && !c.CheckQuorum {
 		return errors.New("CheckQuorum must be enabled when ReadOnlyOption is ReadOnlyLeaseBased")
 	}
-
+	// c.Strategy.SetName("defualt")
 	return nil
 }
 
@@ -303,8 +319,15 @@ type raft struct {
 	// only leader keeps heartbeatElapsed.
 	heartbeatElapsed int
 
+	// Rtt检测计数器
+	rttprobeElapsed int
+
 	checkQuorum bool
 	preVote     bool
+
+	// True represents simulation
+	networkSimulation           bool
+	this_is_a_testing_varialble bool
 
 	heartbeatTimeout int
 	electionTimeout  int
@@ -313,6 +336,15 @@ type raft struct {
 	// when raft changes its state to follower or candidate.
 	randomizedElectionTimeout int
 	disableProposalForwarding bool
+
+	//RttProbe进行的时间间隔
+	rttprobeTimeout int
+
+	// 保存和其他节点的Rtt
+	rttMap map[uint64]RttMetaInfo
+
+	//用于保存任意两节点之间的网络信息矩阵
+	nodeLatency [][]uint64
 
 	tick func()
 	step stepFunc
@@ -324,6 +356,8 @@ type raft struct {
 	// current term. Those will be handled as fast as first log is committed in
 	// current term.
 	pendingReadIndexMessages []pb.Message
+
+	leaderElectionStrategy strategy.Strategy
 }
 
 func newRaft(c *Config) *raft {
@@ -357,12 +391,18 @@ func newRaft(c *Config) *raft {
 		prs:                       tracker.MakeProgressTracker(c.MaxInflightMsgs),
 		electionTimeout:           c.ElectionTick,
 		heartbeatTimeout:          c.HeartbeatTick,
+		rttprobeTimeout:           c.RttprobeTick,
 		logger:                    c.Logger,
 		checkQuorum:               c.CheckQuorum,
 		preVote:                   c.PreVote,
+		networkSimulation:         c.NetworkSimulation,
+		nodeLatency:               c.NodeLatency,
 		readOnly:                  newReadOnly(c.ReadOnlyOption),
 		disableProposalForwarding: c.DisableProposalForwarding,
+		leaderElectionStrategy:    c.Strategy,
 	}
+
+	r.rttMap = make(map[uint64]RttMetaInfo)
 
 	cfg, prs, err := confchange.Restore(confchange.Changer{
 		Tracker:   r.prs,
@@ -385,9 +425,10 @@ func newRaft(c *Config) *raft {
 	for _, n := range r.prs.VoterNodes() {
 		nodesStrs = append(nodesStrs, fmt.Sprintf("%x", n))
 	}
-
+	r.logger.Infof("This is a new version of raft")
 	r.logger.Infof("newRaft %x [peers: [%s], term: %d, commit: %d, applied: %d, lastindex: %d, lastterm: %d]",
 		r.id, strings.Join(nodesStrs, ","), r.Term, r.raftLog.committed, r.raftLog.applied, r.raftLog.lastIndex(), r.raftLog.lastTerm())
+	// r.logger.Infof("Stretegy name used is %s",c.Strategy.GetName())
 	return r
 }
 
@@ -433,6 +474,10 @@ func (r *raft) send(m pb.Message) {
 		if m.Type != pb.MsgProp && m.Type != pb.MsgReadIndex {
 			m.Term = r.Term
 		}
+	}
+	if r.networkSimulation {
+		// time.Sleep(10 * time.Millisecond)
+		time.Sleep(time.Duration((r.nodeLatency[m.From-1][m.To-1])/2) * time.Millisecond)
 	}
 	r.msgs = append(r.msgs, m)
 }
@@ -664,6 +709,14 @@ func (r *raft) appendEntry(es ...pb.Entry) (accepted bool) {
 // tickElection is run by followers and candidates after r.electionTimeout.
 func (r *raft) tickElection() {
 	r.electionElapsed++
+	r.rttprobeElapsed++ // RttProbe 计数器自增
+
+	if r.pastRttprobeTimeout() {
+		r.rttprobeElapsed = 0
+		// 触发一次Rtt测算
+		r.logger.Infof("Raft node %x arise a RTT test.", r.id)
+		r.Step(pb.Message{From: r.id, Type: pb.MsgProbeRttHup})
+	}
 
 	if r.promotable() && r.pastElectionTimeout() {
 		r.electionElapsed = 0
@@ -675,7 +728,15 @@ func (r *raft) tickElection() {
 func (r *raft) tickHeartbeat() {
 	r.heartbeatElapsed++
 	r.electionElapsed++
+	r.rttprobeElapsed++ // RttProbe 计数器自增
 
+	if r.pastRttprobeTimeout() {
+		r.rttprobeElapsed = 0
+		// 触发一次Rtt测算
+		r.logger.Infof("Raft node %x arise a RTT test.", r.id)
+		r.Step(pb.Message{From: r.id, Type: pb.MsgProbeRttHup})
+
+	}
 	if r.electionElapsed >= r.electionTimeout {
 		r.electionElapsed = 0
 		if r.checkQuorum {
@@ -697,6 +758,12 @@ func (r *raft) tickHeartbeat() {
 	}
 }
 
+// 当超过RttProbeTimeout时调用
+func (r *raft) tickRttProbe() {
+	r.rttprobeElapsed++
+
+	// TO DO 判断Rtt增加是否超过检测时间然后进行探测
+}
 func (r *raft) becomeFollower(term uint64, lead uint64) {
 	r.step = stepFollower
 	r.reset(term)
@@ -935,7 +1002,25 @@ func (r *raft) Step(m pb.Message) error {
 		} else {
 			r.logger.Debugf("%x ignoring MsgHup because already leader", r.id)
 		}
+	case pb.MsgProbeRttHup:
+		// TO DO 添加发送Rtt探测函数逻辑
+		r.bcastProbeRtt()
 
+	case pb.MsgProbeRtt:
+		// 接收到Rtt检测请求,直接回传
+		// r.send(pb.Message{To: m.From, Term: m.Term, Type: pb.MsgProbeRttResp})
+		// if r.networkSimulation {
+		// 	// time.Sleep(10 * time.Millisecond)
+		// 	time.Sleep(time.Duration(r.nodeLatency[m.From-1][r.id-1]) * time.Millisecond)
+		// 	r.send(pb.Message{To: m.From, Type: pb.MsgProbeRttResp})
+		// } else {
+		// 	r.send(pb.Message{To: m.From, Type: pb.MsgProbeRttResp})
+		// }
+		r.send(pb.Message{To: m.From, Type: pb.MsgProbeRttResp})
+
+	case pb.MsgProbeRttResp:
+		// 收到Rtt的回复Message 计算时延
+		r.calcRtt(m.From)
 	case pb.MsgVote, pb.MsgPreVote:
 		// We can vote if this is a repeat of a vote we've already cast...
 		canVote := r.Vote == m.From ||
@@ -1583,6 +1668,12 @@ func (r *raft) pastElectionTimeout() bool {
 	return r.electionElapsed >= r.randomizedElectionTimeout
 }
 
+func (r *raft) pastRttprobeTimeout() bool {
+	//r.logger.Infof("r.rttprobeTimeout is %d", r.rttprobeTimeout)
+	//r.logger.Infof("r.rttprobeElapsed is %d", r.rttprobeElapsed)
+	return r.rttprobeElapsed >= r.rttprobeTimeout
+}
+
 func (r *raft) resetRandomizedElectionTimeout() {
 	r.randomizedElectionTimeout = r.electionTimeout + globalRand.Intn(r.electionTimeout)
 }
@@ -1701,4 +1792,65 @@ func sendMsgReadIndexResponse(r *raft, m pb.Message) {
 			r.send(resp)
 		}
 	}
+}
+
+// 添加sendRttProbeMsg 用于向to节点进行一次RTT测算
+func (r *raft) sendRttProbeMsg(to uint64) {
+	m := pb.Message{
+		To:   to,
+		Type: pb.MsgProbeRtt,
+	}
+	r.send(m)
+}
+
+// bcastProbeRtt 会向所有节点发送Rtt测算请求
+func (r *raft) bcastProbeRtt() {
+	r.prs.Visit(func(id uint64, _ *tracker.Progress) {
+		if id == r.id {
+			return
+		}
+		if rttMetaInfo, ok := r.rttMap[id]; ok {
+			//RttMap中已经有该节点的检测信息
+			rttMetaInfo.isProbed = true
+			rttMetaInfo.lastProbingTime = time.Now()
+			r.rttMap[id] = rttMetaInfo
+			r.sendRttProbeMsg(id)
+		} else {
+			//RttMap中还没有id节点的测算信息过
+			r.logger.Infof("Raft node %x Creating", id)
+			r.rttMap[id] = RttMetaInfo{
+				isProbed:        true,
+				lastProbingTime: time.Now(),
+				timeStamp:       0}
+			r.sendRttProbeMsg(id)
+
+		}
+
+	})
+
+}
+
+// 计算对于id节点的Rtt
+func (r *raft) calcRtt(id uint64) {
+	recv_time := time.Now()
+	send_time := r.rttMap[id].lastProbingTime
+
+	// r.logger.Infof("recv time: %s, send time : %s . ",recv_time.Format("2006-01-02 15:04:05"),send_time.Format("2006-01-02 15:04:05"))
+	elapsed_time := recv_time.Sub(send_time)
+	elapsed_time_ms := elapsed_time.Milliseconds()
+	// elapsed_time_ns := elapsed_time.Nanoseconds()
+	elapsed_time_us := elapsed_time.Nanoseconds() / 1000
+
+	rttMetaInfo := r.rttMap[id]
+	rttMetaInfo.isProbed = false
+	// rttMetaInfo.timeStamp = elapsed_time_ns
+	rttMetaInfo.timeStamp = elapsed_time_us
+
+	// r.logger.Infof("Rtt from %x to %x is %d ms.",r.id,id,elapsed_time_ms)
+	if elapsed_time_us < 1000 {
+		r.logger.Infof("Rtt from %x to %x is %d us.", r.id, id, elapsed_time_us)
+	} else {
+		r.logger.Infof("Rtt from %x to %x is %d ms.", r.id, id, elapsed_time_ms)
+	}
+
 }

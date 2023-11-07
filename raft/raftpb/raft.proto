@@ -53,6 +53,11 @@ enum MessageType {
 	MsgReadIndexResp   = 16;
 	MsgPreVote         = 17;
 	MsgPreVoteResp     = 18;
+	MsgNegtiveVote     = 19; // Add Negtive Vote method
+	MsgNegtiveVoteResp = 20;
+	MsgProbeRttHup     = 21; // Trigger a procedure of Rtt Probing
+	MsgProbeRtt        = 22; // Used by probing RTT between two nodes
+	MsgProbeRttResp    = 23; 
 }
 
 message Message {
