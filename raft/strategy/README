@@ -1,0 +1,11 @@
+func CalFlag(Ti_DM []int, T1_DM []int, T2_DM []int, LN int) bool
+输入：i、i-1、i-2时刻（当前、第前一刻、第前两刻）关于主节点到其他节点的时延向量和领导者节点编号LN
+输出为：bool型变量，若为true则说明主节点网络情况异常，转到CalBetterNodes，否则false则不用主动选主
+
+func CalBetterNodes(kMatrix, kMinus1Matrix [][]int, LN int) []int
+输入：k时刻、k-1时刻的时延矩阵（这时候是所有节点间时延信息的矩阵）和领导者编号LN
+输出：平滑处理后时延状况比LN更好的节点编号列表BetterN
+
+func CalBestNode(CommitLatency int, KMatrix [][]int, betterN []int, UseRate []float64, LN int) int 
+输入：一次commit所需的时延、当前时延矩阵、更好节点编号列表、用户率数组、领导者节点编号LN
+输出：综合代价收益最好的节点（可能是LN或其他节点，若为LN则不用切换）

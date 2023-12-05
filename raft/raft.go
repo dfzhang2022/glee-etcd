@@ -16,6 +16,7 @@ package raft
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -28,7 +29,8 @@ import (
 	"go.etcd.io/etcd/raft/confchange"
 	"go.etcd.io/etcd/raft/quorum"
 	pb "go.etcd.io/etcd/raft/raftpb"
-	"go.etcd.io/etcd/raft/strategy"
+
+	//"go.etcd.io/etcd/raft/strategy"
 	"go.etcd.io/etcd/raft/tracker"
 )
 
@@ -220,9 +222,9 @@ type Config struct {
 	DisableProposalForwarding bool
 
 	//用于保存任意两节点之间的网络信息矩阵
-	NodeLatency [][]uint64
+	//NodeLatency [][]uint64
 	// Mark the leader election strategy used
-	Strategy strategy.Strategy
+	//Strategy strategy.Strategy
 }
 
 func (c *Config) validate() error {
@@ -321,6 +323,8 @@ type raft struct {
 
 	// Rtt检测计数器
 	rttprobeElapsed int
+	//leader切换触发计时器
+	leaderTransferElapsed int
 
 	checkQuorum bool
 	preVote     bool
@@ -338,13 +342,14 @@ type raft struct {
 	disableProposalForwarding bool
 
 	//RttProbe进行的时间间隔
-	rttprobeTimeout int
+	rttprobeTimeout       int
+	leaderTransferTimeout int
 
 	// 保存和其他节点的Rtt
-	rttMap map[uint64]RttMetaInfo
-
+	rttMap     map[uint64]RttMetaInfo
+	rttMap_old map[uint64]RttMetaInfo
 	//用于保存任意两节点之间的网络信息矩阵
-	nodeLatency [][]uint64
+	nodeLatency map[uint64]map[uint64]int64
 
 	tick func()
 	step stepFunc
@@ -357,7 +362,7 @@ type raft struct {
 	// current term.
 	pendingReadIndexMessages []pb.Message
 
-	leaderElectionStrategy strategy.Strategy
+	//leaderElectionStrategy strategy.Strategy
 }
 
 func newRaft(c *Config) *raft {
@@ -382,28 +387,33 @@ func newRaft(c *Config) *raft {
 	}
 
 	r := &raft{
-		id:                        c.ID,
-		lead:                      None,
-		isLearner:                 false,
-		raftLog:                   raftlog,
-		maxMsgSize:                c.MaxSizePerMsg,
-		maxUncommittedSize:        c.MaxUncommittedEntriesSize,
-		prs:                       tracker.MakeProgressTracker(c.MaxInflightMsgs),
-		electionTimeout:           c.ElectionTick,
-		heartbeatTimeout:          c.HeartbeatTick,
-		rttprobeTimeout:           c.RttprobeTick,
-		logger:                    c.Logger,
-		checkQuorum:               c.CheckQuorum,
-		preVote:                   c.PreVote,
-		networkSimulation:         c.NetworkSimulation,
-		nodeLatency:               c.NodeLatency,
+		id:                 c.ID,
+		lead:               None,
+		isLearner:          false,
+		raftLog:            raftlog,
+		maxMsgSize:         c.MaxSizePerMsg,
+		maxUncommittedSize: c.MaxUncommittedEntriesSize,
+		prs:                tracker.MakeProgressTracker(c.MaxInflightMsgs),
+		electionTimeout:    c.ElectionTick,
+		heartbeatTimeout:   c.HeartbeatTick,
+		rttprobeTimeout:    c.RttprobeTick,
+		logger:             c.Logger,
+		checkQuorum:        c.CheckQuorum,
+		preVote:            c.PreVote,
+		networkSimulation:  c.NetworkSimulation,
+		//nodeLatency:               c.NodeLatency,
 		readOnly:                  newReadOnly(c.ReadOnlyOption),
 		disableProposalForwarding: c.DisableProposalForwarding,
-		leaderElectionStrategy:    c.Strategy,
+		//leaderElectionStrategy:    c.Strategy,
 	}
-
+	r.rttprobeElapsed = r.electionTimeout * 10        //
+	r.leaderTransferTimeout = r.electionTimeout * 100 //lwm 随便先设一个数
+	r.logger.Infof("leaderTransferTimeout is %d.", r.leaderTransferTimeout)
+	r.logger.Infof("rttprobeElapsed is %d.", r.rttprobeElapsed)
+	r.logger.Infof("electionTimeout is %d.", r.electionTimeout)
+	r.nodeLatency = make(map[uint64]map[uint64]int64)
 	r.rttMap = make(map[uint64]RttMetaInfo)
-
+	r.rttMap_old = make(map[uint64]RttMetaInfo)
 	cfg, prs, err := confchange.Restore(confchange.Changer{
 		Tracker:   r.prs,
 		LastIndex: raftlog.lastIndex(),
@@ -475,10 +485,10 @@ func (r *raft) send(m pb.Message) {
 			m.Term = r.Term
 		}
 	}
-	if r.networkSimulation {
-		// time.Sleep(10 * time.Millisecond)
-		time.Sleep(time.Duration((r.nodeLatency[m.From-1][m.To-1])/2) * time.Millisecond)
-	}
+	// if r.networkSimulation {
+	// 	// time.Sleep(10 * time.Millisecond)
+	// 	time.Sleep(time.Duration((r.nodeLatency[m.From-1][m.To-1])/2) * time.Millisecond)
+	// }
 	r.msgs = append(r.msgs, m)
 }
 
@@ -729,13 +739,32 @@ func (r *raft) tickHeartbeat() {
 	r.heartbeatElapsed++
 	r.electionElapsed++
 	r.rttprobeElapsed++ // RttProbe 计数器自增
-
+	r.leaderTransferElapsed++
 	if r.pastRttprobeTimeout() {
 		r.rttprobeElapsed = 0
 		// 触发一次Rtt测算
 		r.logger.Infof("Raft node %x arise a RTT test.", r.id)
 		r.Step(pb.Message{From: r.id, Type: pb.MsgProbeRttHup})
 
+	}
+	if r.pastLeaderTransferTimeout() {
+		r.leaderTransferElapsed = 0
+		if r.Determine_network_deterioration() {
+			//寻找最优节点
+			BetterN := r.CalBetterNodes()
+			if len(BetterN) == 0 {
+				r.logger.Infof("no better node.")
+			} else {
+				//切换收益模型
+				BestNode := r.CalBestNode(BetterN)
+				if BestNode == r.id {
+					r.logger.Infof("no best node.")
+				} else {
+					r.activeTransferLeadership(BestNode)
+				}
+
+			}
+		}
 	}
 	if r.electionElapsed >= r.electionTimeout {
 		r.electionElapsed = 0
@@ -1261,6 +1290,23 @@ func stepLeader(r *raft, m pb.Message) error {
 		pr.RecentActive = true
 		pr.ProbeSent = false
 
+		// lwm   更新时延矩阵
+		rttMap := make(map[uint64]int64)
+		r.logger.Infof("lwm m.RttMap string  is " + string(m.Rttmap))
+		err := json.Unmarshal(m.Rttmap, &rttMap)
+		if err != nil {
+			r.logger.Infof("%v receive rttMap error lwm", r.id)
+		}
+		if len(rttMap) != 0 {
+			for id, value := range rttMap {
+				if r.nodeLatency[m.From] == nil {
+					r.nodeLatency[m.From] = make(map[uint64]int64)
+				}
+				r.nodeLatency[m.From][id] = value
+				r.logger.Infof("lwm test Rtt from %v to %v is %d us.", id, m.From, value)
+			}
+		}
+
 		// free one slot for the full inflights window to allow progress.
 		if pr.State == tracker.StateReplicate && pr.Inflights.Full() {
 			pr.Inflights.FreeFirstOne()
@@ -1286,6 +1332,7 @@ func stepLeader(r *raft, m pb.Message) error {
 				r.send(pb.Message{To: req.From, Type: pb.MsgReadIndexResp, Index: rs.index, Entries: req.Entries})
 			}
 		}
+
 	case pb.MsgSnapStatus:
 		if pr.State != tracker.StateSnapshot {
 			return nil
@@ -1472,7 +1519,23 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 
 func (r *raft) handleHeartbeat(m pb.Message) {
 	r.raftLog.commitTo(m.Commit)
-	r.send(pb.Message{To: m.From, Type: pb.MsgHeartbeatResp, Context: m.Context})
+	// lwm  发送节点时延信息给leader
+	rttMapInfo := make(map[uint64]int64)
+	for id, value := range r.rttMap {
+		if value.timeStamp == 0 {
+			r.logger.Infof("lwm test send Rttinfo from %v to %v is %d us. value is 0", id, m.From, value.timeStamp)
+			continue
+		}
+		rttMapInfo[id] = value.timeStamp
+		r.logger.Infof("lwm test send Rttinfo from %v to %v is %d us.", id, m.From, value.timeStamp)
+	}
+	rttmMapBytes, err := json.Marshal(rttMapInfo)
+	//r.logger.Infof("lwm send rttMapBytes" + string(rttmMapBytes))
+	if err != nil {
+		r.logger.Infof("%x send rttMap error lwm", r.id)
+	}
+
+	r.send(pb.Message{To: m.From, Type: pb.MsgHeartbeatResp, Context: m.Context, Rttmap: rttmMapBytes})
 }
 
 func (r *raft) handleSnapshot(m pb.Message) {
@@ -1673,6 +1736,11 @@ func (r *raft) pastRttprobeTimeout() bool {
 	//r.logger.Infof("r.rttprobeElapsed is %d", r.rttprobeElapsed)
 	return r.rttprobeElapsed >= r.rttprobeTimeout
 }
+func (r *raft) pastLeaderTransferTimeout() bool {
+	//r.logger.Infof("r.rttprobeTimeout is %d", r.rttprobeTimeout)
+	//r.logger.Infof("r.rttprobeElapsed is %d", r.rttprobeElapsed)
+	return r.leaderTransferElapsed >= r.leaderTransferTimeout
+}
 
 func (r *raft) resetRandomizedElectionTimeout() {
 	r.randomizedElectionTimeout = r.electionTimeout + globalRand.Intn(r.electionTimeout)
@@ -1845,7 +1913,12 @@ func (r *raft) calcRtt(id uint64) {
 	rttMetaInfo.isProbed = false
 	// rttMetaInfo.timeStamp = elapsed_time_ns
 	rttMetaInfo.timeStamp = elapsed_time_us
+	if r.rttMap[id].timeStamp != 0 {
+		rttMetaInfo.timeStamp = (elapsed_time_us*2 + rttMetaInfo.timeStamp*8) / 10 //SRTT
+	}
 
+	r.rttMap_old[id] = r.rttMap[id]
+	r.rttMap[id] = rttMetaInfo //更新rttMap
 	// r.logger.Infof("Rtt from %x to %x is %d ms.",r.id,id,elapsed_time_ms)
 	if elapsed_time_us < 1000 {
 		r.logger.Infof("Rtt from %x to %x is %d us.", r.id, id, elapsed_time_us)
@@ -1853,4 +1926,131 @@ func (r *raft) calcRtt(id uint64) {
 		r.logger.Infof("Rtt from %x to %x is %d ms.", r.id, id, elapsed_time_ms)
 	}
 
+}
+
+func (r *raft) activeTransferLeadership(transferee uint64) {
+	r.step(r, pb.Message{Type: pb.MsgTransferLeader, From: transferee, To: r.lead})
+}
+func (r *raft) Determine_network_deterioration() bool {
+	var diff_1 int64
+	var LNSum1 int64
+	for id, rttmapinfo := range r.rttMap {
+		diff_1 += rttmapinfo.timeStamp - r.rttMap_old[id].timeStamp
+		LNSum1 += rttmapinfo.timeStamp
+	}
+	if LNSum1 == 0 {
+		//0处理，说明无有效时延信息，无法主动选主
+		return false
+	}
+
+	R_1 := float64(diff_1) / float64(LNSum1)
+	fmt.Println(R_1)
+	if R_1 < 0.3 {
+		return false
+	} else {
+		return true
+	}
+
+}
+func (r *raft) CalBetterNodes() []uint64 {
+	BetterN := []uint64{}
+	var leaderTotalDelay int64
+	var leaderTotalCount int64
+	for _, rttmapinfo := range r.rttMap {
+		if rttmapinfo.timeStamp != 0 {
+			leaderTotalDelay += rttmapinfo.timeStamp
+			leaderTotalCount += 1
+		}
+	}
+	if leaderTotalCount == 0 { //leader完全无数据
+		return BetterN
+	}
+	leaderAvgDelay := leaderTotalDelay / leaderTotalCount
+	for id, rttMap := range r.nodeLatency {
+		var totalDelay int64
+		var totalCount int64
+		for _, value := range rttMap {
+			totalDelay += value
+			totalCount += 1
+		}
+		if totalCount == 0 { //该节点目前无时延信息
+			continue
+		}
+		if (totalDelay / totalCount) < leaderAvgDelay {
+			BetterN = append(BetterN, id)
+		}
+	}
+	return BetterN
+}
+func (r *raft) CalBestNode(BetterN []uint64) uint64 {
+	//计算领导者节点的rtt中位数和平均数
+	leaderRTTInfo := make([]int64, 0)
+	n := len(r.prs.VoterNodes())
+	r.logger.Infof("lwm test node num n is %d.", n)
+	BestNode := r.id
+	var BestNodeIncome float64
+	for _, rttmapinfo := range r.rttMap {
+		if rttmapinfo.timeStamp != 0 {
+			leaderRTTInfo = append(leaderRTTInfo, rttmapinfo.timeStamp)
+		}
+	}
+	if len(leaderRTTInfo) < n/2 {
+		r.logger.Infof("lwm leader hasn't enough rtt info")
+		return BestNode
+	} else {
+		leader_median := calculateMedian(leaderRTTInfo, n)
+		//leader_averge := calculateAverage(leaderRTTInfo)
+		for _, id := range BetterN {
+			rttMap := r.nodeLatency[id]
+			// 提取值到切片
+			values := make([]int64, 0, len(rttMap))
+			for _, value := range rttMap {
+				values = append(values, value)
+			}
+			// 对切片进行排序
+			sort.Slice(values, func(i, j int) bool {
+				return values[i] < values[j]
+			})
+			if len(values) < n/2 {
+				r.logger.Infof("lwm node %v hasn't enough rtt info", id)
+				continue
+			}
+			// 计算中位数
+			median := calculateMedian(values, n)
+			// 计算平均数
+			//average := calculateAverage(values)
+			CommitLatencydiff := leader_median - median
+
+			// ∑ Hi*(RTT_leader - RTT_newleader)
+			UseRatediff := 0.0
+
+			//
+			for sourceNode, _ := range r.nodeLatency {
+				RRTdiff := float64(r.rttMap[sourceNode].timeStamp - r.nodeLatency[id][sourceNode])
+				//UseRatediff += UseRate[i] * RRTdiff
+				UseRatediff += 0.33 * RRTdiff
+			}
+			//U = α*(┏ - ┏_new) + ∑ Hi*(RTT_leader - RTT_newleader)
+			Profit := UseRatediff + 0.3*float64(CommitLatencydiff)
+			if Profit > BestNodeIncome {
+				BestNodeIncome = Profit
+				BestNode = id
+			}
+		}
+		return BestNode
+	}
+
+}
+
+func calculateMedian(values []int64, n int) float64 {
+	mid := n/2 - 1
+	return float64(values[mid]) //values中没有节点本身时延
+}
+
+func calculateAverage(values []int64) float64 {
+	sum := int64(0)
+	for _, value := range values {
+		sum += value
+	}
+	return float64(sum) / float64(len(values))
 }

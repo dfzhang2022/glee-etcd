@@ -73,6 +73,7 @@ message Message {
 	optional bool        reject      = 10 [(gogoproto.nullable) = false];
 	optional uint64      rejectHint  = 11 [(gogoproto.nullable) = false];
 	optional bytes       context     = 12;
+	optional bytes       rttmap      = 13;
 }
 
 message HardState {

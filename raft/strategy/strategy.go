@@ -1,143 +1,169 @@
-package strategy
+// package strategy
 
-import (
-    //"fmt"
-)
+// import (
+// 	"fmt"
+// 	"sort"
+// )
 
-//type Strategy struct {
-//    name string
-//}
-// func (s Strategy) GetName() string {
-//     return s.name
-// }
-// func (s *Strategy) SetName(newName string) {
-//     s.name = newName
+// // 定义接口
+// type MyInterface interface {
+// 	CalFlag(Ti_DM []int, T1_DM []int, T2_DM []int, LN int) bool
+// 	CalBetterNodes(kMatrix, kMinus1Matrix [][]int) []int
+// 	CalBestNode(CommitLatency []int, KMatrix [][]int, betterN []int, UseRate []float64, LN int) int
 // }
 
+// // 实现接口的结构体
+// type MyStruct struct {
+// }
 
+// // 实现接口的方法
+// func (ms MyStruct) CalFlag(Ti_DM []int, T1_DM []int, T2_DM []int, LN int) bool {
+// 	n := len(Ti_DM)
+// 	diff_1 := 0
+// 	diff_2 := 0
+// 	LNSum1 := 0
+// 	LNSum2 := 0
 
-// 定义策略接口
-type Strategy interface {
-    Calculate(matrix [][]int) int
-}
+// 	if n < 2 {
+// 		//小于两个节点则不用考虑主动选主
+// 		return false
+// 	}
 
-/* 
-Input:
-    - Ti_DM: Delay matrix at time i
-    - LN: Leader number
+// 	for col := 0; col < n; col++ {
+// 		if col != LN {
+// 			diff_1 += Ti_DM[col] - T1_DM[col]
+// 			LNSum1 += T1_DM[col]
+// 		}
+// 	}
 
-Output:
-    - IEFlag: Initial exception flag
+// 	if LNSum1 == 0 {
+// 		//0处理，说明无有效时延信息，无法主动选主
+// 		return false
+// 	}
 
-Variables:
-    - IEFlag: Boolean (initialize to False)
-    - n: Integer
-    - diff_1, diff_2, LNSum, LNSum2: Real numbers
-    - T_i_minus_1_DM, T_i_minus_2_DM: Delay matrices
+// 	R_1 := float64(diff_1) / float64(LNSum1)
+// 	fmt.Println(R_1)
+// 	if R_1 < 0.3 {
+// 		return false
+// 	}
+// 	for col := 0; col < n; col++ {
+// 		if col != LN {
+// 			diff_2 += T1_DM[col] - T2_DM[col]
+// 			LNSum2 += T2_DM[col]
+// 		}
+// 	}
 
-n = CalculateMatrixRank(Ti_DM)
-IEFlag = False
-(T_i_minus_1_DM, T_i_minus_2_DM) = GetPreviousDelayMatrices()
+// 	if LNSum2 == 0 {
+// 		//0处理，说明无有效时延信息，无法主动选主
+// 		return false
+// 	}
 
-For col = 1 to n:
-    If col ≠ LN:
-        diff_1 = diff_1 + (Ti_DM[LN, col] - T_i_minus_1_DM[LN, col])
-        LNSum = LNSum + T_i_minus_1_DM[LN, col]
+// 	R_2 := float64(diff_2) / float64(LNSum2)
+// 	if R_2 < 0.3 {
+// 		return false
+// 	}
+// 	return true
+// }
 
-R_1 = diff_1 / LNSum
+// func (ms MyStruct) CalBetterNodes(kMatrix, kMinus1Matrix [][]int, LN int) []int {
+// 	// 获取节点数量，且该数量一定是大于等于2的
+// 	numNodes := len(kMatrix)
 
-If R_1 > 0.3:
-    R_2 = 0
-    For col = 1 to n:
-        If col ≠ LN:
-        diff_2 = diff_2 + (T_i_minus_1_DM[LN, col] - T_i_minus_2_DM[LN, col])
-        LNSum2 = LNSum2 + T_i_minus_2_DM[LN, col]
-    R_2 = diff_2 / LNSum2
-    If R_2 > 0.3:
-        IEFlag = True
+// 	// 初始化Delaylist，存放每个节点的平均时延
+// 	Delaylist := make([]int, numNodes)
 
-Return IEFlag
+// 	// 计算k时刻的所有节点到其他节点的综合平均时延
+// 	for i := 0; i < numNodes; i++ {
+// 		totalDelay := 0
+// 		for j := 0; j < numNodes; j++ {
+// 			if i != j { // 排除节点到自身的时延
+// 				totalDelay += kMatrix[i][j]
+// 			}
+// 		}
+// 		// 平均时延不包括节点到自身
+// 		Delaylist[i] = totalDelay / (numNodes - 1)
+// 	}
 
-*/
+// 	// 计算k-1时刻的所有节点到其他节点的综合平均时延
+// 	for i := 0; i < numNodes; i++ {
+// 		totalDelay := 0
+// 		for j := 0; j < numNodes; j++ {
+// 			if i != j { // 排除节点到自身的时延
+// 				totalDelay += kMinus1Matrix[i][j]
+// 			}
+// 		}
+// 		// 平均时延不包括节点到自身，且与k时刻的计算值进行加权平滑处理
+// 		Delaylist[i] = 8*Delaylist[i]/10 + 2*(totalDelay/(numNodes-1))/10
+// 	}
 
-// 具体策略1：计算二维矩阵中所有元素的和
-type SumStrategy struct{}
+// 	// 初始化BetterN，存放加权平均时延比LN小的节点编号
+// 	BetterN := []int{}
 
-func (s SumStrategy) Calculate(matrix [][]int) int {
-    sum := 0
-    for _, row := range matrix {
-        for _, num := range row {
-            sum += num
-        }
-    }
-    return sum
-}
+// 	// 比较加权平均时延，将比LN时延小的节点编号添加到BetterN中
+// 	for i := 0; i < numNodes; i++ {
+// 		if i != LN && Delaylist[i] < Delaylist[LN] {
+// 			BetterN = append(BetterN, i)
+// 		}
+// 	}
 
-func CalculateIEFlag(Ti_DM [][]int, T1_DM [][]int, T2_DM [][]int, LN int) bool {
-    n := len(Ti_DM)
-    IEFlag := false
-    diff_1 := 0
-    diff_2 := 0
-    LNSum1 := 0
-    LNSum2 := 0
+// 	return BetterN
+// }
 
-    for col := 0; col < n; col++ {
-        if col != LN {
-            diff_1 += Ti_DM[LN][col] - T1_DM[LN][col]
-            LNSum1 += T1_DM[LN][col]
-//          fmt.Println(diff_1)
-        }
-    }
-   
-    R_1 := float64(diff_1) / float64(LNSum1)
-//  fmt.Println(R_1)
-    if R_1 > 0.3 {
-        for col := 0; col < n; col++ {
-            if col != LN {
-                diff_2 += T1_DM[LN][col] - T2_DM[LN][col]
-                LNSum2 += T2_DM[LN][col]
-            }
-        }
+// func (ms MyStruct) CalBestNode(CommitLatency int, KMatrix [][]int, betterN []int, UseRate []float64, LN int) int {
+// 	//参数设置
+// 	Alpha := 1.0
+// 	n := len(KMatrix)
+// 	m := len(betterN)
+// 	bestN := LN
+// 	bestProfit := 0.0
 
-        R_2 := float64(diff_2) / float64(LNSum2)
-//      fmt.Println(R_2)
-        if R_2 > 0.3 {
-            IEFlag = true
-        }
-    }
- 
-    return IEFlag
-}
+// 	//遍历betterN中所有节点，计算收益,若betterN为空，则bestN依旧是原LN
+// 	for k := 0; k < m; k++ {
+// 		//计算node成为newleader时的收益
+// 		node := betterN[k]
 
-// 具体策略2：计算二维矩阵中所有元素的平均值
-type AverageStrategy struct{}
+// 		//求中位数mideumRTT
+// 		var RTT []int
+// 		RTT = append(RTT, KMatrix[node]...)
+// 		sort.Ints(RTT)
+// 		var mideumRTT int
+// 		if n%2 == 1 {
+// 			mideumRTT = RTT[n/2]
+// 		} else {
+// 			mideumRTT = (RTT[n/2] + RTT[n/2+1]) / 2
+// 		}
 
-func (s AverageStrategy) Calculate(matrix [][]int) int {
-    sum := 0
-    count := 0
-    for _, row := range matrix {
-        for _, num := range row {
-            sum += num
-            count++
-        }
-    }
-    if count > 0 {
-        return sum / count
-    }
-    return 0
-}
+// 		//┏ - ┏_new
+// 		CommitLatencydiff := CommitLatency - mideumRTT
 
-// 上下文，包含策略接口
-type Context struct {
-    strategy Strategy
-}
+// 		// ∑ Hi*(RTT_leader - RTT_newleader)
+// 		UseRatediff := 0.0
+// 		for i := 0; i < n; i++ {
+// 			RRTdiff := float64(KMatrix[LN][i] - KMatrix[node][i])
+// 			UseRatediff += UseRate[i] * RRTdiff
+// 		}
 
-// 上下文的成员函数，用于设置策略
-func (c *Context) SetStrategy(strategy Strategy) {
-    c.strategy = strategy
-}
+// 		//U = α*(┏ - ┏_new) + ∑ Hi*(RTT_leader - RTT_newleader)
+// 		Profit := UseRatediff + Alpha*float64(CommitLatencydiff)
 
-// 上下文的成员函数，用于执行策略
-func (c Context) ExecuteStrategy(matrix [][]int) int {
-    return c.strategy.Calculate(matrix)
-}
+// 		if Profit > bestProfit {
+// 			bestProfit = Profit
+// 			bestN = node
+// 		}
+// 	}
+// 	return bestN
+// }
+
+// func main() {
+// 	// 创建 MyStruct 的实例
+// 	myStructInstance := MyStruct{}
+
+// 	// 将实例赋值给接口变量
+// 	var myInterfaceVar MyInterface
+// 	myInterfaceVar = myStructInstance
+
+// 	// 使用接口方法
+// 	IEflag := myInterfaceVar.CalFlag(Ti_DM, T1_DM, T2_DM, LN)
+// 	betterN := myInterfaceVar.CalBetterNodes(kMatrix, kMinus1Matrix, LN)
+// 	bestN := myInterfaceVar.CalBestNode(CommitLatency, KMatrix, betterN, UseRate, LN)
+// }
