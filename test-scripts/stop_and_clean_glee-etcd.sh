@@ -7,7 +7,7 @@ CONTAINERS=("glee1" "glee2" "glee3")
 # 停止容器中的glee-etcd进程
 for container in ${CONTAINERS[@]} 
 do
-  docker exec $container pkill etcd
+  docker exec $container pkill glee-etcd
 done 
 
 # 解除端口绑定

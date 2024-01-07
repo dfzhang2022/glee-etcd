@@ -338,6 +338,7 @@ type raft struct {
 	// randomizedElectionTimeout is a random number between
 	// [electiontimeout, 2 * electiontimeout - 1]. It gets reset
 	// when raft changes its state to follower or candidate.
+	electionPenaltyTime       int //选举惩罚时间  由rtt测算得到
 	randomizedElectionTimeout int
 	disableProposalForwarding bool
 
@@ -407,7 +408,7 @@ func newRaft(c *Config) *raft {
 		//leaderElectionStrategy:    c.Strategy,
 	}
 	r.rttprobeElapsed = r.electionTimeout * 10        //
-	r.leaderTransferTimeout = r.electionTimeout * 100 //lwm 随便先设一个数
+	r.leaderTransferTimeout = r.electionTimeout * 100 //lwm electionTimeout是1s leaderTransferTimeout是100s
 	r.logger.Infof("leaderTransferTimeout is %d.", r.leaderTransferTimeout)
 	r.logger.Infof("rttprobeElapsed is %d.", r.rttprobeElapsed)
 	r.logger.Infof("electionTimeout is %d.", r.electionTimeout)
@@ -760,6 +761,7 @@ func (r *raft) tickHeartbeat() {
 				if BestNode == r.id {
 					r.logger.Infof("no best node.")
 				} else {
+					r.logger.Infof("transferleader start.")
 					r.activeTransferLeadership(BestNode)
 				}
 
@@ -1150,8 +1152,12 @@ func stepLeader(r *raft, m pb.Message) error {
 			return ErrProposalDropped
 		}
 		if r.leadTransferee != None {
-			r.logger.Debugf("%x [term %d] transfer leadership to %x is in progress; dropping proposal", r.id, r.Term, r.leadTransferee)
-			return ErrProposalDropped
+			//r.logger.Debugf("%x [term %d] transfer leadership to %x is in progress; dropping proposal", r.id, r.Term, r.leadTransferee)
+			r.logger.Infof("%x [term %d] transfer leadership to %x is in progress; dropping proposal", r.id, r.Term, r.leadTransferee)
+			m.To = r.leadTransferee
+			r.send(m)
+			//return ErrProposalDropped
+			return nil
 		}
 
 		for i := range m.Entries {
@@ -1743,7 +1749,12 @@ func (r *raft) pastLeaderTransferTimeout() bool {
 }
 
 func (r *raft) resetRandomizedElectionTimeout() {
-	r.randomizedElectionTimeout = r.electionTimeout + globalRand.Intn(r.electionTimeout)
+	if r.electionPenaltyTime == 0 {
+		r.randomizedElectionTimeout = r.electionTimeout + globalRand.Intn(r.electionTimeout)
+	} else {
+		r.randomizedElectionTimeout = r.electionTimeout + r.electionPenaltyTime
+	}
+
 }
 
 func (r *raft) sendTimeoutNow(to uint64) {
@@ -1926,6 +1937,22 @@ func (r *raft) calcRtt(id uint64) {
 		r.logger.Infof("Rtt from %x to %x is %d ms.", r.id, id, elapsed_time_ms)
 	}
 
+	//计算选举惩罚时间
+	leaderRTTInfo := make([]int64, 0)
+	n := len(r.prs.VoterNodes())
+	for _, rttmapinfo := range r.rttMap {
+		if rttmapinfo.timeStamp != 0 {
+			leaderRTTInfo = append(leaderRTTInfo, rttmapinfo.timeStamp)
+		}
+	}
+	if len(leaderRTTInfo) < n/2 {
+		r.logger.Infof("lwm leader hasn't enough rtt info")
+		r.electionPenaltyTime = globalRand.Intn(r.electionTimeout) //还没有完整数据 给一个随机值
+	} else {
+		leader_median := calculateMedian(leaderRTTInfo, n)
+		r.electionPenaltyTime = int(leader_median) * 10 //electionTimeout为10 代表1s    一个tick 100ms
+	}
+
 }
 
 func (r *raft) activeTransferLeadership(transferee uint64) {
@@ -1944,7 +1971,7 @@ func (r *raft) Determine_network_deterioration() bool {
 	}
 
 	R_1 := float64(diff_1) / float64(LNSum1)
-	fmt.Println(R_1)
+	r.logger.Infof("lwm test R_1 is %d.", R_1)
 	if R_1 < 0.3 {
 		return false
 	} else {
